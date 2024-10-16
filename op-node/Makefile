@@ -16,7 +16,7 @@ VERSION ?= $(shell tags=$$(git tag --points-at $(GITCOMMIT) | grep '^op-node/' |
 
 LDFLAGSSTRING +=-X main.GitCommit=$(GITCOMMIT)
 LDFLAGSSTRING +=-X main.GitDate=$(GITDATE)
-LDFLAGSSTRING +=-X github.com/ethereum-optimism/optimism/op-node/version.Version=$(VERSION)
+LDFLAGSSTRING +=-X github.com/ethereum-optimism/optimism/op-node/version.Version='0.0.1'
 LDFLAGSSTRING +=-X github.com/ethereum-optimism/optimism/op-node/version.Meta=$(VERSION_META)
 LDFLAGS := -ldflags "$(LDFLAGSSTRING)"
 
@@ -26,7 +26,7 @@ ifeq ($(shell uname),Darwin)
 endif
 
 op-node:
-	env GO111MODULE=on GOOS=$(TARGETOS) GOARCH=$(TARGETARCH) CGO_ENABLED=0 go build -v $(LDFLAGS) -o ./bin/op-node ./cmd/main.go
+	env GO111MODULE=on GOOS=$(TARGETOS) GOARCH=$(TARGETARCH) CGO_ENABLED=0 go build -v $(LDFLAGS) -o ./bin/gr1d-node ./cmd/main.go
 
 clean:
 	rm bin/op-node

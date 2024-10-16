@@ -41,9 +41,9 @@ func main() {
 	app := cli.NewApp()
 	app.Version = VersionWithMeta
 	app.Flags = cliapp.ProtectFlags(flags.Flags)
-	app.Name = "op-node"
-	app.Usage = "Optimism Rollup Node"
-	app.Description = "The Optimism Rollup Node derives L2 block inputs from L1 data and drives an external L2 Execution Engine to build a L2 chain."
+	app.Name = "gr1d-node"
+	app.Usage = "GRID Circuit Node"
+	app.Description = "The GR1D Node pulls L2 block data from L1 and drives the L2 Execution Engine to build and maintain the L2 chain."
 	app.Action = cliapp.LifecycleCmd(RollupNodeMain)
 	app.Commands = []*cli.Command{
 		{

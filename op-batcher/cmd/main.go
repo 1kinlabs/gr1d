@@ -29,9 +29,9 @@ func main() {
 	app := cli.NewApp()
 	app.Flags = cliapp.ProtectFlags(flags.Flags)
 	app.Version = opservice.FormatVersion(Version, GitCommit, GitDate, "")
-	app.Name = "op-batcher"
-	app.Usage = "Batch Submitter Service"
-	app.Description = "Service for generating and submitting L2 tx batches to L1"
+	app.Name = "gr1d-batcher"
+	app.Usage = "GR1D Batch Submission Service"
+	app.Description = "Service for generating and submitting L2 transaction batches to L1 in the GR1D Network"
 	app.Action = cliapp.LifecycleCmd(batcher.Main(Version))
 	app.Commands = []*cli.Command{
 		{

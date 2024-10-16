@@ -45,9 +45,9 @@ func run(ctx context.Context, args []string, action ConfiguredLifecycle) error {
 	app := cli.NewApp()
 	app.Version = VersionWithMeta
 	app.Flags = cliapp.ProtectFlags(flags.Flags)
-	app.Name = "op-challenger"
-	app.Usage = "Challenge outputs"
-	app.Description = "Ensures that on chain outputs are correct."
+	app.Name = "gr1d-challenger"
+	app.Usage = "Challenge Outputs"
+	app.Description = "Ensures the correctness of on-chain outputs within the GR1D Network."
 	app.Commands = []*cli.Command{
 		ListGamesCommand,
 		ListClaimsCommand,
