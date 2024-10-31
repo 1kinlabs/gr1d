@@ -3,6 +3,7 @@ package eth
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -81,6 +82,30 @@ func (b Bytes32) String() string {
 // output during logging.
 func (b Bytes32) TerminalString() string {
 	return fmt.Sprintf("%x..%x", b[:3], b[29:])
+}
+
+type Bytes8 [8]byte
+
+func (b *Bytes8) UnmarshalJSON(text []byte) error {
+	return hexutil.UnmarshalFixedJSON(reflect.TypeOf(b), text, b[:])
+}
+
+func (b *Bytes8) UnmarshalText(text []byte) error {
+	return hexutil.UnmarshalFixedText("Bytes8", text, b[:])
+}
+
+func (b Bytes8) MarshalText() ([]byte, error) {
+	return hexutil.Bytes(b[:]).MarshalText()
+}
+
+func (b Bytes8) String() string {
+	return hexutil.Encode(b[:])
+}
+
+// TerminalString implements log.TerminalStringer, formatting a string for console
+// output during logging.
+func (b Bytes8) TerminalString() string {
+	return fmt.Sprintf("%x", b[:])
 }
 
 type Bytes96 [96]byte
@@ -329,6 +354,33 @@ type PayloadAttributes struct {
 	NoTxPool bool `json:"noTxPool,omitempty"`
 	// GasLimit override
 	GasLimit *Uint64Quantity `json:"gasLimit,omitempty"`
+	// EIP-1559 parameters, to be specified only post-Holocene
+	EIP1559Params *Bytes8 `json:"eip1559Params,omitempty"`
+}
+
+// IsDepositsOnly returns whether all transactions of the PayloadAttributes are of Deposit
+// type. Empty transactions are also considered non-Deposit transactions.
+func (a *PayloadAttributes) IsDepositsOnly() bool {
+	for _, tx := range a.Transactions {
+		if len(tx) == 0 || tx[0] != types.DepositTxType {
+			return false
+		}
+	}
+	return true
+}
+
+// WithDepositsOnly return a shallow clone with all non-Deposit transactions stripped from its
+// transactions. The order is preserved.
+func (a *PayloadAttributes) WithDepositsOnly() *PayloadAttributes {
+	clone := *a
+	depositTxs := make([]Data, 0, len(a.Transactions))
+	for _, tx := range a.Transactions {
+		if len(tx) > 0 && tx[0] == types.DepositTxType {
+			depositTxs = append(depositTxs, tx)
+		}
+	}
+	clone.Transactions = depositTxs
+	return &clone
 }
 
 type ExecutePayloadStatus string
@@ -390,7 +442,45 @@ type SystemConfig struct {
 	Scalar Bytes32 `json:"scalar"`
 	// GasLimit identifies the L2 block gas limit
 	GasLimit uint64 `json:"gasLimit"`
+	// EIP1559Params contains the Holocene-encoded EIP-1559 parameters. This
+	// value will be 0 if Holocene is not active, or if derivation has yet to
+	// process any EIP_1559_PARAMS system config update events.
+	EIP1559Params Bytes8 `json:"eip1559Params"`
 	// More fields can be added for future SystemConfig versions.
+
+	// MarshalPreHolocene indicates whether or not this struct should be
+	// marshaled in the pre-Holocene format. The pre-Holocene format does
+	// not marshal the EIP1559Params field. The presence of this field in
+	// pre-Holocene codebases causes the rollup config to be rejected.
+	MarshalPreHolocene bool `json:"-"`
+}
+
+func (sysCfg SystemConfig) MarshalJSON() ([]byte, error) {
+	if sysCfg.MarshalPreHolocene {
+		return jsonMarshalPreHolocene(sysCfg)
+	}
+	return jsonMarshalHolocene(sysCfg)
+}
+
+func jsonMarshalHolocene(sysCfg SystemConfig) ([]byte, error) {
+	type sysCfgMarshaling SystemConfig
+	return json.Marshal(sysCfgMarshaling(sysCfg))
+}
+
+func jsonMarshalPreHolocene(sysCfg SystemConfig) ([]byte, error) {
+	type sysCfgMarshaling struct {
+		BatcherAddr common.Address `json:"batcherAddr"`
+		Overhead    Bytes32        `json:"overhead"`
+		Scalar      Bytes32        `json:"scalar"`
+		GasLimit    uint64         `json:"gasLimit"`
+	}
+	sc := sysCfgMarshaling{
+		BatcherAddr: sysCfg.BatcherAddr,
+		Overhead:    sysCfg.Overhead,
+		Scalar:      sysCfg.Scalar,
+		GasLimit:    sysCfg.GasLimit,
+	}
+	return json.Marshal(sc)
 }
 
 // The Ecotone upgrade introduces a versioned L1 scalar format
@@ -473,7 +563,7 @@ func (b *Bytes48) UnmarshalJSON(text []byte) error {
 }
 
 func (b *Bytes48) UnmarshalText(text []byte) error {
-	return hexutil.UnmarshalFixedText("Bytes32", text, b[:])
+	return hexutil.UnmarshalFixedText("Bytes48", text, b[:])
 }
 
 func (b Bytes48) MarshalText() ([]byte, error) {

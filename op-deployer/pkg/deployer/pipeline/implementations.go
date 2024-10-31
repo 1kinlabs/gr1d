@@ -1,18 +1,26 @@
 package pipeline
 
 import (
-	"context"
 	"fmt"
 	"math/big"
 
+	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/standard"
+	"github.com/ethereum-optimism/optimism/op-service/jsonutil"
+
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/opcm"
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/state"
-
-	"github.com/ethereum-optimism/optimism/op-chain-ops/foundry"
-	"github.com/ethereum-optimism/optimism/op-chain-ops/script"
 )
 
-func DeployImplementations(ctx context.Context, env *Env, bundle ArtifactsBundle, intent *state.Intent, st *state.State) error {
+type SuperchainProofParams struct {
+	WithdrawalDelaySeconds          uint64 `json:"withdrawalDelaySeconds" toml:"withdrawalDelaySeconds"`
+	MinProposalSizeBytes            uint64 `json:"minProposalSizeBytes" toml:"minProposalSizeBytes"`
+	ChallengePeriodSeconds          uint64 `json:"challengePeriodSeconds" toml:"challengePeriodSeconds"`
+	ProofMaturityDelaySeconds       uint64 `json:"proofMaturityDelaySeconds" toml:"proofMaturityDelaySeconds"`
+	DisputeGameFinalityDelaySeconds uint64 `json:"disputeGameFinalityDelaySeconds" toml:"disputeGameFinalityDelaySeconds"`
+	MIPSVersion                     uint64 `json:"mipsVersion" toml:"mipsVersion"`
+}
+
+func DeployImplementations(env *Env, intent *state.Intent, st *state.State) error {
 	lgr := env.Logger.New("stage", "deploy-implementations")
 
 	if !shouldDeployImplementations(intent, st) {
@@ -25,8 +33,8 @@ func DeployImplementations(ctx context.Context, env *Env, bundle ArtifactsBundle
 	var standardVersionsTOML string
 	var contractsRelease string
 	var err error
-	if intent.L1ContractsLocator.IsTag() {
-		standardVersionsTOML, err = opcm.StandardL1VersionsDataFor(intent.L1ChainID)
+	if intent.L1ContractsLocator.IsTag() && intent.DeploymentStrategy == state.DeploymentStrategyLive {
+		standardVersionsTOML, err = standard.L1VersionsDataFor(intent.L1ChainID)
 		if err != nil {
 			return fmt.Errorf("error getting standard versions TOML: %w", err)
 		}
@@ -35,48 +43,39 @@ func DeployImplementations(ctx context.Context, env *Env, bundle ArtifactsBundle
 		contractsRelease = "dev"
 	}
 
-	var dump *foundry.ForgeAllocs
-	var dio opcm.DeployImplementationsOutput
-	err = CallScriptBroadcast(
-		ctx,
-		CallScriptBroadcastOpts{
-			L1ChainID:   big.NewInt(int64(intent.L1ChainID)),
-			Logger:      lgr,
-			ArtifactsFS: bundle.L1,
-			Deployer:    env.Deployer,
-			Signer:      env.Signer,
-			Client:      env.L1Client,
-			Broadcaster: KeyedBroadcaster,
-			Handler: func(host *script.Host) error {
-				host.ImportState(st.SuperchainDeployment.StateDump)
+	proofParams, err := jsonutil.MergeJSON(
+		SuperchainProofParams{
+			WithdrawalDelaySeconds:          standard.WithdrawalDelaySeconds,
+			MinProposalSizeBytes:            standard.MinProposalSizeBytes,
+			ChallengePeriodSeconds:          standard.ChallengePeriodSeconds,
+			ProofMaturityDelaySeconds:       standard.ProofMaturityDelaySeconds,
+			DisputeGameFinalityDelaySeconds: standard.DisputeGameFinalityDelaySeconds,
+			MIPSVersion:                     standard.MIPSVersion,
+		},
+		intent.GlobalDeployOverrides,
+	)
+	if err != nil {
+		return fmt.Errorf("error merging proof params from overrides: %w", err)
+	}
 
-				dio, err = opcm.DeployImplementations(
-					host,
-					opcm.DeployImplementationsInput{
-						Salt:                            st.Create2Salt,
-						WithdrawalDelaySeconds:          big.NewInt(604800),
-						MinProposalSizeBytes:            big.NewInt(126000),
-						ChallengePeriodSeconds:          big.NewInt(86400),
-						ProofMaturityDelaySeconds:       big.NewInt(604800),
-						DisputeGameFinalityDelaySeconds: big.NewInt(302400),
-						MipsVersion:                     big.NewInt(1),
-						Release:                         contractsRelease,
-						SuperchainConfigProxy:           st.SuperchainDeployment.SuperchainConfigProxyAddress,
-						ProtocolVersionsProxy:           st.SuperchainDeployment.ProtocolVersionsProxyAddress,
-						OpcmProxyOwner:                  st.SuperchainDeployment.ProxyAdminAddress,
-						StandardVersionsToml:            standardVersionsTOML,
-						UseInterop:                      false,
-					},
-				)
-				if err != nil {
-					return fmt.Errorf("error deploying implementations: %w", err)
-				}
-				dump, err = host.StateDump()
-				if err != nil {
-					return fmt.Errorf("error dumping state: %w", err)
-				}
-				return nil
-			},
+	env.L1ScriptHost.ImportState(st.L1StateDump.Data)
+
+	dio, err := opcm.DeployImplementations(
+		env.L1ScriptHost,
+		opcm.DeployImplementationsInput{
+			Salt:                            st.Create2Salt,
+			WithdrawalDelaySeconds:          new(big.Int).SetUint64(proofParams.WithdrawalDelaySeconds),
+			MinProposalSizeBytes:            new(big.Int).SetUint64(proofParams.MinProposalSizeBytes),
+			ChallengePeriodSeconds:          new(big.Int).SetUint64(proofParams.ChallengePeriodSeconds),
+			ProofMaturityDelaySeconds:       new(big.Int).SetUint64(proofParams.ProofMaturityDelaySeconds),
+			DisputeGameFinalityDelaySeconds: new(big.Int).SetUint64(proofParams.DisputeGameFinalityDelaySeconds),
+			MipsVersion:                     new(big.Int).SetUint64(proofParams.MIPSVersion),
+			Release:                         contractsRelease,
+			SuperchainConfigProxy:           st.SuperchainDeployment.SuperchainConfigProxyAddress,
+			ProtocolVersionsProxy:           st.SuperchainDeployment.ProtocolVersionsProxyAddress,
+			OpcmProxyOwner:                  st.SuperchainDeployment.ProxyAdminAddress,
+			StandardVersionsToml:            standardVersionsTOML,
+			UseInterop:                      intent.UseInterop,
 		},
 	)
 	if err != nil {
@@ -95,7 +94,6 @@ func DeployImplementations(ctx context.Context, env *Env, bundle ArtifactsBundle
 		L1StandardBridgeImplAddress:             dio.L1StandardBridgeImpl,
 		OptimismMintableERC20FactoryImplAddress: dio.OptimismMintableERC20FactoryImpl,
 		DisputeGameFactoryImplAddress:           dio.DisputeGameFactoryImpl,
-		StateDump:                               dump,
 	}
 
 	return nil

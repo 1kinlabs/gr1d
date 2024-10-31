@@ -15,6 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/standard"
+
+	"github.com/ethereum/go-ethereum/log"
+
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/opcm"
 
 	"github.com/ethereum-optimism/optimism/op-chain-ops/foundry"
@@ -24,15 +28,23 @@ var ErrUnsupportedArtifactsScheme = errors.New("unsupported artifacts URL scheme
 
 type DownloadProgressor func(current, total int64)
 
+func NoopDownloadProgressor(current, total int64) {}
+
 type CleanupFunc func() error
 
 var noopCleanup = func() error { return nil }
+
+func LogProgressor(lgr log.Logger) DownloadProgressor {
+	return func(curr, total int64) {
+		lgr.Info("artifacts download progress", "current", curr, "total", total)
+	}
+}
 
 func DownloadArtifacts(ctx context.Context, loc *opcm.ArtifactsLocator, progress DownloadProgressor) (foundry.StatDirFs, CleanupFunc, error) {
 	var u *url.URL
 	var err error
 	if loc.IsTag() {
-		u, err = opcm.StandardArtifactsURLForTag(loc.Tag)
+		u, err = standard.ArtifactsURLForTag(loc.Tag)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to get standard artifacts URL for tag %s: %w", loc.Tag, err)
 		}

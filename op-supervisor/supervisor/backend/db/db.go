@@ -10,11 +10,11 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/db/fromda"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/db/logs"
+	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
 )
-
-var ErrUnknownChain = errors.New("unknown chain")
 
 type LogStorage interface {
 	io.Closer
@@ -43,14 +43,25 @@ type LogStorage interface {
 	// The block-seal of the blockNum block, that the log was included in, is returned.
 	// This seal may be fully zeroed, without error, if the block isn't fully known yet.
 	Contains(blockNum uint64, logIdx uint32, logHash common.Hash) (includedIn types.BlockSeal, err error)
+
+	// OpenBlock accumulates the ExecutingMessage events for a block and returns them
+	OpenBlock(blockNum uint64) (ref eth.BlockRef, logCount uint32, execMsgs map[uint32]*types.ExecutingMessage, err error)
 }
 
 type LocalDerivedFromStorage interface {
-	Last() (derivedFrom eth.BlockRef, derived eth.BlockRef, err error)
+	First() (derivedFrom types.BlockSeal, derived types.BlockSeal, err error)
+	Latest() (derivedFrom types.BlockSeal, derived types.BlockSeal, err error)
 	AddDerived(derivedFrom eth.BlockRef, derived eth.BlockRef) error
-	LastDerived(derivedFrom eth.BlockID) (derived eth.BlockID, err error)
-	DerivedFrom(derived eth.BlockID) (derivedFrom eth.BlockID, err error)
+	LastDerivedAt(derivedFrom eth.BlockID) (derived types.BlockSeal, err error)
+	DerivedFrom(derived eth.BlockID) (derivedFrom types.BlockSeal, err error)
+	FirstAfter(derivedFrom, derived eth.BlockID) (nextDerivedFrom, nextDerived types.BlockSeal, err error)
+	NextDerivedFrom(derivedFrom eth.BlockID) (nextDerivedFrom types.BlockSeal, err error)
+	NextDerived(derived eth.BlockID) (derivedFrom types.BlockSeal, nextDerived types.BlockSeal, err error)
+	PreviousDerivedFrom(derivedFrom eth.BlockID) (prevDerivedFrom types.BlockSeal, err error)
+	PreviousDerived(derived eth.BlockID) (prevDerived types.BlockSeal, err error)
 }
+
+var _ LocalDerivedFromStorage = (*fromda.DB)(nil)
 
 type CrossDerivedFromStorage interface {
 	LocalDerivedFromStorage
@@ -60,7 +71,7 @@ type CrossDerivedFromStorage interface {
 var _ LogStorage = (*logs.DB)(nil)
 
 // ChainsDB is a database that stores logs and derived-from data for multiple chains.
-// it implements the ChainsStorage interface.
+// it implements the LogStorage interface, as well as several DB interfaces needed by the cross package.
 type ChainsDB struct {
 	// RW mutex:
 	// Read = chains can be read / mutated.
@@ -71,6 +82,7 @@ type ChainsDB struct {
 	logDBs map[types.ChainID]LogStorage
 
 	// cross-unsafe: how far we have processed the unsafe data.
+	// If present but set to a zeroed value the cross-unsafe will fallback to cross-safe.
 	crossUnsafe map[types.ChainID]types.BlockSeal
 
 	// local-safe: index of what we optimistically know about L2 blocks being derived from L1
@@ -84,27 +96,65 @@ type ChainsDB struct {
 	// an error until it has this L1 finality to work with.
 	finalizedL1 eth.L1BlockRef
 
+	// depSet is the dependency set, used to determine what may be tracked,
+	// what is missing, and to provide it to DB users.
+	depSet depset.DependencySet
+
 	logger log.Logger
 }
 
-func NewChainsDB(l log.Logger) *ChainsDB {
+func NewChainsDB(l log.Logger, depSet depset.DependencySet) *ChainsDB {
 	return &ChainsDB{
 		logDBs:      make(map[types.ChainID]LogStorage),
 		logger:      l,
 		localDBs:    make(map[types.ChainID]LocalDerivedFromStorage),
 		crossDBs:    make(map[types.ChainID]CrossDerivedFromStorage),
 		crossUnsafe: make(map[types.ChainID]types.BlockSeal),
+		depSet:      depSet,
 	}
 }
 
-func (db *ChainsDB) AddLogDB(chain types.ChainID, logDB LogStorage) {
+func (db *ChainsDB) AddLogDB(chainID types.ChainID, logDB LogStorage) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if db.logDBs[chain] != nil {
-		log.Warn("overwriting existing logDB for chain", "chain", chain)
+	if _, ok := db.logDBs[chainID]; ok {
+		db.logger.Warn("overwriting existing log DB for chain", "chain", chainID)
 	}
-	db.logDBs[chain] = logDB
+
+	db.logDBs[chainID] = logDB
+}
+
+func (db *ChainsDB) AddLocalDerivedFromDB(chainID types.ChainID, dfDB LocalDerivedFromStorage) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if _, ok := db.localDBs[chainID]; ok {
+		db.logger.Warn("overwriting existing local derived-from DB for chain", "chain", chainID)
+	}
+
+	db.localDBs[chainID] = dfDB
+}
+
+func (db *ChainsDB) AddCrossDerivedFromDB(chainID types.ChainID, dfDB CrossDerivedFromStorage) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if _, ok := db.crossDBs[chainID]; ok {
+		db.logger.Warn("overwriting existing cross derived-from DB for chain", "chain", chainID)
+	}
+
+	db.crossDBs[chainID] = dfDB
+}
+
+func (db *ChainsDB) AddCrossUnsafeTracker(chainID types.ChainID) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if _, ok := db.crossUnsafe[chainID]; ok {
+		db.logger.Warn("overwriting existing cross-unsafe tracker for chain", "chain", chainID)
+	}
+	db.crossUnsafe[chainID] = types.BlockSeal{}
 }
 
 // ResumeFromLastSealedBlock prepares the chains db to resume recording events after a restart.
@@ -127,6 +177,10 @@ func (db *ChainsDB) ResumeFromLastSealedBlock() error {
 		}
 	}
 	return nil
+}
+
+func (db *ChainsDB) DependencySet() depset.DependencySet {
+	return db.depSet
 }
 
 func (db *ChainsDB) Close() error {

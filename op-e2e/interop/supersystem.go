@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -79,8 +80,10 @@ type SuperSystem interface {
 	L2GethClient(network string) *ethclient.Client
 	// get the secret for a network and role
 	L2OperatorKey(network string, role devkeys.ChainOperatorRole) ecdsa.PrivateKey
-	// get the list of network IDs
+	// get the list of network IDs as key-strings
 	L2IDs() []string
+	// get the chain ID for a network
+	ChainID(network string) *big.Int
 	// register a username to an account on all L2s
 	AddUser(username string)
 	// get the user key for a user on an L2
@@ -415,11 +418,15 @@ func (s *interopE2ESystem) newL2(id string, l2Out *interopgen.L2Output) l2Set {
 	}
 }
 
+func (s *interopE2ESystem) ChainID(network string) *big.Int {
+	return s.l2s[network].chainID
+}
+
 // prepareSupervisor creates a new supervisor for the system
 func (s *interopE2ESystem) prepareSupervisor() *supervisor.SupervisorService {
 	// Be verbose with op-supervisor, it's in early test phase
 	logger := testlog.Logger(s.t, log.LevelDebug).New("role", "supervisor")
-	cfg := supervisorConfig.Config{
+	cfg := &supervisorConfig.Config{
 		MetricsConfig: metrics.CLIConfig{
 			Enabled: false,
 		},
@@ -438,20 +445,25 @@ func (s *interopE2ESystem) prepareSupervisor() *supervisor.SupervisorService {
 		L2RPCs:  []string{},
 		Datadir: path.Join(s.t.TempDir(), "supervisor"),
 	}
-	depSet := &depset.StaticConfigDependencySet{
-		Dependencies: make(map[supervisortypes.ChainID]*depset.StaticConfigDependency),
-	}
-	for id := range s.l2s {
-		cfg.L2RPCs = append(cfg.L2RPCs, s.l2s[id].l2Geth.UserRPC().RPC())
-		chainID := supervisortypes.ChainIDFromBig(s.l2s[id].chainID)
-		depSet.Dependencies[chainID] = &depset.StaticConfigDependency{
+	depSet := make(map[supervisortypes.ChainID]*depset.StaticConfigDependency)
+
+	// Iterate over the L2 chain configs. The L2 nodes don't exist yet.
+	for _, l2Out := range s.worldOutput.L2s {
+		chainID := supervisortypes.ChainIDFromBig(l2Out.Genesis.Config.ChainID)
+		index, err := chainID.ToUInt32()
+		require.NoError(s.t, err)
+		depSet[chainID] = &depset.StaticConfigDependency{
+			ChainIndex:     supervisortypes.ChainIndex(index),
 			ActivationTime: 0,
 			HistoryMinTime: 0,
 		}
 	}
-	cfg.DependencySetSource = depSet
+	stDepSet, err := depset.NewStaticConfigDependencySet(depSet)
+	require.NoError(s.t, err)
+	cfg.DependencySetSource = stDepSet
+
 	// Create the supervisor with the configuration
-	super, err := supervisor.SupervisorFromConfig(context.Background(), &cfg, logger)
+	super, err := supervisor.SupervisorFromConfig(context.Background(), cfg, logger)
 	require.NoError(s.t, err)
 	// Start the supervisor
 	err = super.Start(context.Background())
@@ -495,7 +507,7 @@ func (s *interopE2ESystem) prepare(t *testing.T, w worldResourcePaths) {
 	ctx := context.Background()
 	for _, l2 := range s.l2s {
 		err := s.SupervisorClient().AddL2RPC(ctx, l2.l2Geth.UserRPC().RPC())
-		require.NoError(s.t, err, "failed to add L2 RPC to supervisor", "error", err)
+		require.NoError(s.t, err, "failed to add L2 RPC to supervisor")
 	}
 }
 
@@ -599,6 +611,7 @@ func (s *interopE2ESystem) L2IDs() []string {
 	for id := range s.l2s {
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return ids
 }
 

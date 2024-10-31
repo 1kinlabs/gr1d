@@ -26,14 +26,13 @@ func runBadTxInBatchTest(gt *testing.T, testCfg *helpers.TestCfg[any]) {
 	env.Alice.L2.ActCheckReceiptStatusOfLastTx(true)(t)
 
 	// Instruct the batcher to submit a faulty channel, with an invalid tx.
-	err := env.Batcher.Buffer(t, func(block *types.Block) {
+	env.Batcher.ActL2BatchBuffer(t, func(block *types.Block) {
 		// Replace the tx with one that has a bad signature.
 		txs := block.Transactions()
 		newTx, err := txs[1].WithSignature(env.Alice.L2.Signer(), make([]byte, 65))
 		txs[1] = newTx
 		require.NoError(t, err)
 	})
-	require.NoError(t, err)
 	env.Batcher.ActL2ChannelClose(t)
 	env.Batcher.ActL2BatchSubmit(t)
 
@@ -144,14 +143,14 @@ func Test_ProgramAction_BadTxInBatch(gt *testing.T) {
 	matrix.AddTestCase(
 		"HonestClaim",
 		nil,
-		helpers.LatestForkOnly,
+		helpers.NewForkMatrix(helpers.Granite),
 		runBadTxInBatchTest,
 		helpers.ExpectNoError(),
 	)
 	matrix.AddTestCase(
 		"JunkClaim",
 		nil,
-		helpers.LatestForkOnly,
+		helpers.NewForkMatrix(helpers.Granite),
 		runBadTxInBatchTest,
 		helpers.ExpectError(claim.ErrClaimNotValid),
 		helpers.WithL2Claim(common.HexToHash("0xdeadbeef")),
@@ -159,14 +158,14 @@ func Test_ProgramAction_BadTxInBatch(gt *testing.T) {
 	matrix.AddTestCase(
 		"ResubmitBadFirstFrame-HonestClaim",
 		nil,
-		helpers.LatestForkOnly,
+		helpers.NewForkMatrix(helpers.Granite),
 		runBadTxInBatch_ResubmitBadFirstFrame_Test,
 		helpers.ExpectNoError(),
 	)
 	matrix.AddTestCase(
 		"ResubmitBadFirstFrame-JunkClaim",
 		nil,
-		helpers.LatestForkOnly,
+		helpers.NewForkMatrix(helpers.Granite),
 		runBadTxInBatch_ResubmitBadFirstFrame_Test,
 		helpers.ExpectError(claim.ErrClaimNotValid),
 		helpers.WithL2Claim(common.HexToHash("0xdeadbeef")),

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/standard"
+
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/opcm"
 
 	"github.com/ethereum-optimism/optimism/op-service/ioutil"
@@ -11,14 +13,34 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+type DeploymentStrategy string
+
+const (
+	DeploymentStrategyLive    DeploymentStrategy = "live"
+	DeploymentStrategyGenesis DeploymentStrategy = "genesis"
+)
+
+func (d DeploymentStrategy) Check() error {
+	switch d {
+	case DeploymentStrategyLive, DeploymentStrategyGenesis:
+		return nil
+	default:
+		return fmt.Errorf("deployment strategy must be 'live' or 'genesis'")
+	}
+}
+
 var emptyAddress common.Address
 
 type Intent struct {
+	DeploymentStrategy DeploymentStrategy `json:"deploymentStrategy" toml:"deploymentStrategy"`
+
 	L1ChainID uint64 `json:"l1ChainID" toml:"l1ChainID"`
 
-	SuperchainRoles SuperchainRoles `json:"superchainRoles" toml:"-"`
+	SuperchainRoles *SuperchainRoles `json:"superchainRoles" toml:"superchainRoles,omitempty"`
 
 	FundDevAccounts bool `json:"fundDevAccounts" toml:"fundDevAccounts"`
+
+	UseInterop bool `json:"useInterop" toml:"useInterop"`
 
 	L1ContractsLocator *opcm.ArtifactsLocator `json:"l1ContractsLocator" toml:"l1ContractsLocator"`
 
@@ -34,6 +56,10 @@ func (c *Intent) L1ChainIDBig() *big.Int {
 }
 
 func (c *Intent) Check() error {
+	if c.DeploymentStrategy != DeploymentStrategyLive && c.DeploymentStrategy != DeploymentStrategyGenesis {
+		return fmt.Errorf("deploymentStrategy must be 'live' or 'local'")
+	}
+
 	if c.L1ChainID == 0 {
 		return fmt.Errorf("l1ChainID must be set")
 	}
@@ -80,7 +106,7 @@ func (c *Intent) WriteToFile(path string) error {
 }
 
 func (c *Intent) checkL1Prod() error {
-	versions, err := opcm.StandardL1VersionsFor(c.L1ChainID)
+	versions, err := standard.L1VersionsFor(c.L1ChainID)
 	if err != nil {
 		return err
 	}
@@ -109,7 +135,7 @@ func (c *Intent) checkL1Dev() error {
 }
 
 func (c *Intent) checkL2Prod() error {
-	_, err := opcm.StandardArtifactsURLForTag(c.L2ContractsLocator.Tag)
+	_, err := standard.ArtifactsURLForTag(c.L2ContractsLocator.Tag)
 	return err
 }
 
@@ -140,11 +166,11 @@ type ChainIntent struct {
 }
 
 type ChainRoles struct {
-	ProxyAdminOwner common.Address `json:"proxyAdminOwner" toml:"proxyAdminOwner"`
+	L1ProxyAdminOwner common.Address `json:"l1ProxyAdminOwner" toml:"l1ProxyAdminOwner"`
+
+	L2ProxyAdminOwner common.Address `json:"l2ProxyAdminOwner" toml:"l2ProxyAdminOwner"`
 
 	SystemConfigOwner common.Address `json:"systemConfigOwner" toml:"systemConfigOwner"`
-
-	GovernanceTokenOwner common.Address `json:"governanceTokenOwner" toml:"governanceTokenOwner"`
 
 	UnsafeBlockSigner common.Address `json:"unsafeBlockSigner" toml:"unsafeBlockSigner"`
 
@@ -161,16 +187,16 @@ func (c *ChainIntent) Check() error {
 		return fmt.Errorf("id must be set")
 	}
 
-	if c.Roles.ProxyAdminOwner == emptyAddress {
+	if c.Roles.L1ProxyAdminOwner == emptyAddress {
 		return fmt.Errorf("proxyAdminOwner must be set")
 	}
 
 	if c.Roles.SystemConfigOwner == emptyAddress {
-		c.Roles.SystemConfigOwner = c.Roles.ProxyAdminOwner
+		c.Roles.SystemConfigOwner = c.Roles.L1ProxyAdminOwner
 	}
 
-	if c.Roles.GovernanceTokenOwner == emptyAddress {
-		c.Roles.GovernanceTokenOwner = c.Roles.ProxyAdminOwner
+	if c.Roles.L2ProxyAdminOwner == emptyAddress {
+		return fmt.Errorf("l2ProxyAdminOwner must be set")
 	}
 
 	if c.Roles.UnsafeBlockSigner == emptyAddress {
